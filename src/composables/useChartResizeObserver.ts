@@ -1,4 +1,4 @@
-import { onMounted, onUnmounted, ShallowRef, watch } from 'vue'
+import { onMounted, onUnmounted, watch, type Ref, type ShallowRef } from 'vue'
 
 /**
  * ECharts 实例接口（简化版）
@@ -14,8 +14,8 @@ interface EChartsInstance {
  * @param chartInstance - ECharts 实例 ref
  */
 export function useChartResizeObserver(
-  chartRef: Readonly<ShallowRef<HTMLElement | null>>,
-  chartInstance: ShallowRef<EChartsInstance | null>
+  chartRef: Ref<HTMLElement | undefined> | ShallowRef<HTMLElement | null>,
+  chartInstance: Ref<EChartsInstance | null> | ShallowRef<EChartsInstance | null>
 ) {
   let resizeObserver: ResizeObserver | null = null
 

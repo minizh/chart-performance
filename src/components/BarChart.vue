@@ -3,11 +3,12 @@
 </template>
 
 <script setup lang="ts">
+import { useTemplateRef, shallowRef, onMounted, watch, nextTick, ref, onUnmounted } from 'vue'
 import * as echarts from 'echarts'
-import { nextTick, onMounted, shallowRef, useTemplateRef, watch } from 'vue'
-import { estimateMemoryUsage } from '../composables/estimateMemoryUsage'
 import { useChartOptions } from '../composables/useChartOptions'
+import { estimateMemoryUsage } from '../composables/estimateMemoryUsage'
 import { useChartResizeObserver } from '../composables/useChartResizeObserver'
+import { useDataGeneratorWorker } from '../composables/useDataGeneratorWorker'
 import { applyCustomSamplingToNumbers, getCustomSamplingConfig, type SamplingResultStats } from '../composables/useCustomSampling'
 
 const props = defineProps<{
@@ -35,18 +36,11 @@ const chartInstance = shallowRef<echarts.ECharts | null>(null)
 // 使用 ResizeObserver 监听容器大小变化
 useChartResizeObserver(chartRef, chartInstance)
 
-// 生成数据
-const generateData = (size: number) => {
-  const data: number[] = []
-  const categories: string[] = []
-  
-  for (let i = 0; i < size; i++) {
-    data.push(Math.random() * 1000)
-    categories.push(`Item ${i + 1}`)
-  }
-  
-  return { data, categories }
-}
+// 使用 Web Worker 生成数据
+const { generateNumbers, terminate } = useDataGeneratorWorker()
+
+// 渲染状态
+const isRendering = ref(false)
 
 // 初始化图表
 const initChart = () => {
@@ -56,33 +50,37 @@ const initChart = () => {
   }
 }
 
+// 让出主线程
+const yieldMainThread = (): Promise<void> => {
+  return new Promise(resolve => {
+    if ('scheduler' in globalThis && 'yield' in (globalThis as any).scheduler) {
+      ;(globalThis as any).scheduler.yield().then(resolve)
+    } else {
+      requestAnimationFrame(() => resolve())
+    }
+  })
+}
+
 // 更新图表
-const updateChart = () => {
-  if (!chartInstance.value) {
-    console.warn('Chart instance not ready')
+const updateChart = async () => {
+  if (!chartInstance.value || isRendering.value) {
     return
   }
   
+  isRendering.value = true
   const startTime = performance.now()
+  
+  // 提前声明所有变量
   let dataPoints = 0
   let memoryUsage = 0
   let samplingStats: SamplingResultStats | null = null
   
-  // 用于记录渲染完成的回调函数
-  const onRenderFinished = () => {
-    const endTime = performance.now()
-    const renderTime = Math.round(endTime - startTime)
-    
-    // 触发渲染完成事件
-    emit('render-complete', dataPoints, renderTime, memoryUsage, samplingStats)
-    
-    // 移除一次性监听
-    chartInstance.value?.off('finished', onRenderFinished)
-  }
-  
   try {
-    // 生成原始数据
-    const { data: rawData, categories: rawCategories } = generateData(props.dataSize)
+    // 使用 Web Worker 异步生成数据
+    const { data: rawData, categories: rawCategories } = await generateNumbers(props.dataSize)
+    
+    // 让出主线程
+    await yieldMainThread()
     
     // 应用自定义采样（如果启用）
     const customSamplingConfig = getCustomSamplingConfig()
@@ -94,7 +92,6 @@ const updateChart = () => {
       data = samplingResult.values
       categories = samplingResult.categories || rawCategories
       
-      // 构建采样统计
       samplingStats = {
         samplingTime: samplingResult.stats?.samplingTime || 0,
         originalCount: samplingResult.originalCount,
@@ -103,10 +100,12 @@ const updateChart = () => {
           ? samplingResult.sampledCount / samplingResult.originalCount 
           : 1
       }
+      
+      await yieldMainThread()
     }
     
-    // 实际渲染的数据点数（采样后）
     dataPoints = data.length
+    memoryUsage = estimateMemoryUsage(data)
     
     // 获取通用配置
     const { baseOptions, baseSeriesOptions } = useChartOptions(props.optimizationOptions)
@@ -138,27 +137,40 @@ const updateChart = () => {
       }]
     }
     
-    // 监听渲染完成事件（在 setOption 之前绑定）
+    // 定义渲染完成回调
+    const onRenderFinished = () => {
+      const endTime = performance.now()
+      const renderTime = Math.round(endTime - startTime)
+      
+      emit('render-complete', dataPoints, renderTime, memoryUsage, samplingStats)
+      chartInstance.value?.off('finished', onRenderFinished)
+      isRendering.value = false
+    }
+    
+    // 监听渲染完成事件
     chartInstance.value.on('finished', onRenderFinished)
     
-    // 设置图表选项
-    chartInstance.value.setOption(option, true)
-    
-    // 计算预估内存占用
-    memoryUsage = estimateMemoryUsage(data)
+    // 让出主线程后再执行 setOption
+    requestAnimationFrame(() => {
+      chartInstance.value?.setOption(option, true)
+    })
     
   } catch (error) {
     console.error('Chart update error:', error)
-    // 发生错误时立即触发完成事件
     const endTime = performance.now()
     const renderTime = Math.round(endTime - startTime)
     emit('render-complete', dataPoints, renderTime, memoryUsage, samplingStats)
+    isRendering.value = false
   }
 }
 
 // 生命周期钩子
 onMounted(() => {
   initChart()
+})
+
+onUnmounted(() => {
+  terminate()
 })
 
 // 监听属性变化
