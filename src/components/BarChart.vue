@@ -3,10 +3,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, watch, nextTick, onUnmounted } from 'vue'
 import * as echarts from 'echarts'
-import { useChartOptions } from '../composables/useChartOptions'
+import { nextTick, onMounted, shallowRef, useTemplateRef, watch } from 'vue'
 import { estimateMemoryUsage } from '../composables/estimateMemoryUsage'
+import { useChartOptions } from '../composables/useChartOptions'
+import { useChartResizeObserver } from '../composables/useChartResizeObserver'
 import { applyCustomSamplingToNumbers, getCustomSamplingConfig, type SamplingResultStats } from '../composables/useCustomSampling'
 
 const props = defineProps<{
@@ -28,8 +29,11 @@ const emit = defineEmits<{
   ): void
 }>()
 
-const chartRef = ref<HTMLElement>()
-let chartInstance: echarts.ECharts | null = null
+const chartRef = useTemplateRef<HTMLElement>('chartRef')
+const chartInstance = shallowRef<echarts.ECharts | null>(null)
+
+// 使用 ResizeObserver 监听容器大小变化
+useChartResizeObserver(chartRef, chartInstance)
 
 // 生成数据
 const generateData = (size: number) => {
@@ -47,23 +51,34 @@ const generateData = (size: number) => {
 // 初始化图表
 const initChart = () => {
   if (chartRef.value) {
-    chartInstance = echarts.init(chartRef.value)
+    chartInstance.value = echarts.init(chartRef.value)
     updateChart()
   }
 }
 
 // 更新图表
 const updateChart = () => {
-  if (!chartInstance) {
+  if (!chartInstance.value) {
     console.warn('Chart instance not ready')
     return
   }
   
   const startTime = performance.now()
   let dataPoints = 0
-  let renderTime = 0
   let memoryUsage = 0
   let samplingStats: SamplingResultStats | null = null
+  
+  // 用于记录渲染完成的回调函数
+  const onRenderFinished = () => {
+    const endTime = performance.now()
+    const renderTime = Math.round(endTime - startTime)
+    
+    // 触发渲染完成事件
+    emit('render-complete', dataPoints, renderTime, memoryUsage, samplingStats)
+    
+    // 移除一次性监听
+    chartInstance.value?.off('finished', onRenderFinished)
+  }
   
   try {
     // 生成原始数据
@@ -123,39 +138,27 @@ const updateChart = () => {
       }]
     }
     
+    // 监听渲染完成事件（在 setOption 之前绑定）
+    chartInstance.value.on('finished', onRenderFinished)
+    
     // 设置图表选项
-    chartInstance.setOption(option, true)
+    chartInstance.value.setOption(option, true)
     
     // 计算预估内存占用
     memoryUsage = estimateMemoryUsage(data)
     
   } catch (error) {
     console.error('Chart update error:', error)
-  } finally {
-    // 计算渲染时间（包括错误情况）
+    // 发生错误时立即触发完成事件
     const endTime = performance.now()
-    renderTime = Math.round(endTime - startTime)
-    
-    // 触发渲染完成事件，包含采样统计
+    const renderTime = Math.round(endTime - startTime)
     emit('render-complete', dataPoints, renderTime, memoryUsage, samplingStats)
   }
-}
-
-// 响应式调整图表大小
-const handleResize = () => {
-  chartInstance?.resize()
 }
 
 // 生命周期钩子
 onMounted(() => {
   initChart()
-  window.addEventListener('resize', handleResize)
-})
-
-onUnmounted(() => {
-  window.removeEventListener('resize', handleResize)
-  chartInstance?.dispose()
-  chartInstance = null
 })
 
 // 监听属性变化

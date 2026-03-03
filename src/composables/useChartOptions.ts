@@ -35,7 +35,7 @@ export function useChartOptions(optimizationOptions: OptimizationOptions) {
     ...(optimizationOptions.progressive && {
       progressive: 100,
       progressiveThreshold: 1000,
-      progressiveChunkMode: 'seqeentialial'
+      progressiveChunkMode: 'mod' as const
     }),
     // 采样策略
     sampling: optimizationOptions.sampling !== 'none' ? optimizationOptions.sampling : undefined

@@ -13,7 +13,7 @@
           <el-form :model="formConfig" label-position="top" size="small">
             <!-- 数据规模 - 使用数字输入框 -->
             <el-form-item label="数据规模">
-              <el-input-number v-model="formConfig.dataSize" :min="100" :max="500000" :step="1000"
+              <el-input-number v-model="formConfig.dataSize" :min="100" :max="1000000" :step="1000"
                 :step-strictly="false" controls-position="right" style="width: 100%" />
             </el-form-item>
 
